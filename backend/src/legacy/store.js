@@ -1,4 +1,19 @@
 /* =====================================================================
+   ⚠️ ARCHIVO LEGADO — YA NO SE USA EN EL BACKEND ACTIVO
+   ---------------------------------------------------------------------
+   Este archivo se conserva únicamente como referencia histórica de la
+   versión en memoria del backend (antes de la migración a MySQL).
+   Ninguna ruta en src/routes/*.js lo importa actualmente: todas usan
+   los repositorios en src/db/repositories/*.js, que consultan MySQL
+   a través de mysql2 (ver src/db/connection.js).
+
+   Si necesitas volver a la versión en memoria, basta con:
+     1. Mover este archivo de nuevo a src/data/store.js
+     2. Cambiar los `require('../db/repositories/...')` en cada ruta
+        por `require('../data/store')`, como estaba originalmente.
+   ===================================================================== */
+
+/* =====================================================================
    ALMACÉN DE DATOS EN MEMORIA
    ---------------------------------------------------------------------
    Simula una base de datos. Todas las colecciones y contadores viven

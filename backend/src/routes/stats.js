@@ -17,68 +17,63 @@
      },
      actividadReciente: [...]
    }
+
+   MIGRACIÓN A MYSQL: cada cálculo que antes recorría store.vacantes
+   en memoria ahora se hace con consultas SQL (COUNT, GROUP BY, ORDER
+   BY + LIMIT) a través de vacantesRepo y usuariosRepo. El shape de la
+   respuesta JSON es exactamente el mismo que antes.
    ===================================================================== */
 const express = require('express');
 const router = express.Router();
-const store = require('../data/store');
+const vacantesRepo = require('../db/repositories/vacantesRepo');
+const usuariosRepo = require('../db/repositories/usuariosRepo');
+const actividadRepo = require('../db/repositories/actividadRepo');
 
 const ESTADOS = ['Aplicada', 'En revisión', 'Entrevista', 'Oferta', 'Rechazada'];
 
-router.get('/', (req, res) => {
-  const vacantes = store.vacantes;
+router.get('/', async (req, res, next) => {
+  try {
+    const [total, porEstado, empresaTop, ultimaVacante, totalUsuarios, actividadReciente] =
+      await Promise.all([
+        vacantesRepo.count(),
+        vacantesRepo.countByEstado(),
+        vacantesRepo.empresaConMasVacantes(),
+        vacantesRepo.ultimaCreada(),
+        usuariosRepo.count(),
+        actividadRepo.findRecent(10)
+      ]);
 
-  // ---- Tarjetas principales del Dashboard ----
-  const total = vacantes.length;
-  const aplicaciones = total; // toda vacante registrada representa una aplicación enviada
-  const entrevistas = vacantes.filter(v => v.estado === 'Entrevista').length;
-  const ofertas = vacantes.filter(v => v.estado === 'Oferta').length;
-  const rechazos = vacantes.filter(v => v.estado === 'Rechazada').length;
+    // ---- Tarjetas principales del Dashboard ----
+    const aplicaciones = total; // toda vacante registrada representa una aplicación enviada
+    const entrevistas = porEstado['Entrevista'] || 0;
+    const ofertas = porEstado['Oferta'] || 0;
+    const rechazos = porEstado['Rechazada'] || 0;
 
-  // ---- Distribución por estado (gráfico) ----
-  const distribucionEstados = {};
-  ESTADOS.forEach(estado => {
-    distribucionEstados[estado] = vacantes.filter(v => v.estado === estado).length;
-  });
+    // ---- Distribución por estado (gráfico) ----
+    const distribucionEstados = {};
+    ESTADOS.forEach(estado => {
+      distribucionEstados[estado] = porEstado[estado] || 0;
+    });
 
-  // ---- Resumen rápido ----
-  let empresaTop = { nombre: '—', total: 0 };
-  if (vacantes.length > 0) {
-    const conteo = {};
-    vacantes.forEach(v => { conteo[v.empresa] = (conteo[v.empresa] || 0) + 1; });
-    const ordenado = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
-    empresaTop = { nombre: ordenado[0][0], total: ordenado[0][1] };
+    res.json({
+      totales: {
+        vacantesTotales: total,
+        aplicacionesEnviadas: aplicaciones,
+        entrevistas,
+        ofertas,
+        rechazos
+      },
+      distribucionEstados,
+      resumen: {
+        empresaTop,
+        ultimaVacante,
+        totalUsuarios
+      },
+      actividadReciente
+    });
+  } catch (err) {
+    next(err);
   }
-
-  let ultimaVacante = null;
-  if (vacantes.length > 0) {
-    const ultima = [...vacantes].sort((a, b) =>
-      (a.fechaCreacion || '').localeCompare(b.fechaCreacion || '')
-    ).pop();
-    ultimaVacante = {
-      cargo: ultima.cargo,
-      empresa: ultima.empresa,
-      fechaCreacion: ultima.fechaCreacion
-    };
-  }
-
-  const totalUsuarios = store.usuarios.length;
-
-  res.json({
-    totales: {
-      vacantesTotales: total,
-      aplicacionesEnviadas: aplicaciones,
-      entrevistas,
-      ofertas,
-      rechazos
-    },
-    distribucionEstados,
-    resumen: {
-      empresaTop,
-      ultimaVacante,
-      totalUsuarios
-    },
-    actividadReciente: store.actividad
-  });
 });
 
 module.exports = router;

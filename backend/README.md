@@ -1,6 +1,6 @@
 # JobTracker API (Backend)
 
-Backend en **Node.js + Express** con datos en memoria, diseñado para
+Backend en **Node.js + Express + MySQL** (vía `mysql2`), diseñado para
 conectarse directamente con el frontend de JobTracker (`index.html`)
 mediante `fetch()`.
 
@@ -9,6 +9,8 @@ mediante `fetch()`.
 ```bash
 cd jobtracker-backend
 npm install
+cp .env.example .env
+# Edita .env con tus credenciales de MySQL (host, usuario, contraseña, BD)
 npm start
 ```
 
@@ -18,12 +20,48 @@ El servidor queda disponible en:
 http://localhost:3000
 ```
 
+Al iniciar, el servidor verifica la conexión a MySQL antes de aceptar
+peticiones. Si las credenciales son incorrectas, el proceso termina
+con un mensaje de error claro en la consola.
+
 CORS está habilitado para que el frontend (servido desde cualquier
 origen, incluyendo `file://` o `http://localhost:5500`, etc.) pueda
 consumir la API sin restricciones.
 
-> Los datos viven en memoria. Al reiniciar el servidor, se recargan
-> los datos de ejemplo (seed): 2 usuarios, 5 vacantes y 4 seguimientos.
+---
+
+## Base de datos MySQL
+
+El backend espera una base de datos `jobtracker` con las tablas
+`usuarios`, `vacantes`, `seguimientos` y `solicitudes_admin` (más una
+tabla `actividad` para el log de eventos del Dashboard).
+
+El archivo `sql/schema.sql` contiene la definición completa de
+referencia (`CREATE TABLE`) y un `INSERT` opcional con los mismos
+datos de ejemplo que tenía la versión en memoria. Si ya tienes las
+tablas creadas con otros nombres de columna, ajusta los nombres en
+`src/db/repositories/*.js` (las consultas SQL) para que coincidan.
+
+Mapeo de columnas usado (snake_case en BD -> camelCase en JSON):
+
+| Tabla              | Columna BD            | Campo JSON          |
+|---------------------|--------------------------|------------------------|
+| usuarios             | estado_verificacion        | estadoVerificacion       |
+| vacantes              | fecha_creacion               | fechaCreacion              |
+| seguimientos           | vacante_id                      | vacanteId                    |
+| solicitudes_admin        | usuario_id                         | usuarioId                       |
+
+Variables de entorno (`.env`, ver `.env.example`):
+
+```
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=jobtracker
+DB_CONNECTION_LIMIT=10
+PORT=3000
+```
 
 ---
 
@@ -33,6 +71,10 @@ consumir la API sin restricciones.
 |----------------------------------|------------|-------|
 | laura.gomez@jobtracker.com        | admin123   | ADMIN |
 | mariana.rios@jobtracker.com       | user123    | USER  |
+
+(Estos usuarios se insertan mediante `sql/schema.sql` si las tablas
+están vacías; si tu base de datos ya tiene otros usuarios, esos son
+los que se usarán.)
 
 ---
 
@@ -95,7 +137,7 @@ consumir la API sin restricciones.
 |--------|------------|--------------------------------------------------------------------------|
 | GET    | `/stats`   | Métricas del Dashboard: totales, distribución por estado, resumen rápido y actividad reciente |
 
-Ejemplo de respuesta de `/stats`:
+Ejemplo de respuesta de `/stats` (idéntico al de la versión en memoria):
 
 ```json
 {
@@ -126,60 +168,41 @@ Ejemplo de respuesta de `/stats`:
 
 ## Conectar con el frontend
 
-En `index.html`, reemplaza las funciones de la capa `api` para usar
-`fetch` contra `http://localhost:3000`. Ejemplos:
-
-```javascript
-const API_URL = 'http://localhost:3000';
-
-const api = {
-  login(correo, password) {
-    return fetch(`${API_URL}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ correo, password })
-    }).then(res => {
-      if (!res.ok) return res.json().then(e => Promise.reject(new Error(e.error)));
-      return res.json();
-    });
-  },
-
-  getVacantes() {
-    return fetch(`${API_URL}/jobs`).then(res => res.json());
-  },
-
-  createVacante(data) {
-    return fetch(`${API_URL}/jobs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    }).then(res => res.json());
-  },
-
-  // ... mismo patrón para updateVacante (PUT /jobs/:id),
-  // deleteVacante (DELETE /jobs/:id), getUsuarios (/users),
-  // getSeguimientos (/seguimientos), createAdminRequest (/applications),
-  // getDashboardStats (/stats), etc.
-};
-```
+El frontend (`index.html`) ya está conectado a estos endpoints
+mediante `fetch` contra `API_BASE_URL = 'http://localhost:3000'`. No
+es necesario cambiar nada en el frontend: la migración a MySQL es
+transparente porque cada ruta devuelve exactamente el mismo shape de
+respuesta JSON que la versión en memoria.
 
 ## Estructura del proyecto
 
 ```
 jobtracker-backend/
 ├── package.json
+├── .env.example            # Variables de entorno para la conexión MySQL
+├── sql/
+│   └── schema.sql            # CREATE TABLE de referencia + seed opcional
 └── src/
-    ├── server.js          # Punto de entrada, monta todas las rutas
-    ├── data/
-    │   └── store.js        # "Base de datos" en memoria + seed + actividad
+    ├── server.js              # Punto de entrada; verifica conexión MySQL y monta las rutas
+    ├── db/
+    │   ├── connection.js        # Pool de conexiones mysql2/promise
+    │   └── repositories/
+    │       ├── usuariosRepo.js    # Consultas SQL sobre la tabla `usuarios`
+    │       ├── vacantesRepo.js     # Consultas SQL sobre la tabla `vacantes`
+    │       ├── seguimientosRepo.js  # Consultas SQL sobre la tabla `seguimientos`
+    │       ├── solicitudesRepo.js    # Consultas SQL sobre `solicitudes_admin`
+    │       └── actividadRepo.js       # Consultas SQL sobre la tabla `actividad`
     ├── utils/
-    │   └── helpers.js       # stripPassword, todayISO
+    │   └── helpers.js            # stripPassword, todayISO (sin cambios)
+    ├── legacy/
+    │   └── store.js               # Versión anterior en memoria (ya no se usa; solo referencia)
     └── routes/
-        ├── auth.js           # /api/auth/login, register, logout
-        ├── users.js           # /users
-        ├── jobs.js             # /jobs (+ /jobs/:id/seguimientos)
-        ├── seguimientos.js      # /seguimientos
-        ├── applications.js       # /applications
-        ├── activity.js            # /activity
-        └── stats.js                # /stats
+        ├── auth.js                 # /api/auth/login, register, logout
+        ├── users.js                 # /users
+        ├── jobs.js                   # /jobs (+ /jobs/:id/seguimientos)
+        ├── seguimientos.js            # /seguimientos
+        ├── applications.js             # /applications
+        ├── activity.js                  # /activity
+        └── stats.js                      # /stats
 ```
+

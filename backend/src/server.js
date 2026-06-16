@@ -1,17 +1,25 @@
 /* =====================================================================
-   SERVIDOR JOBTRACKER — Node.js + Express (datos en memoria)
+   SERVIDOR JOBTRACKER — Node.js + Express + MySQL
    ---------------------------------------------------------------------
    Backend diseñado para conectarse directamente con el frontend
    JobTracker (index.html) mediante fetch() desde localhost.
 
+   MIGRACIÓN A MYSQL: el servidor ahora verifica la conexión a la base
+   de datos al iniciar (verifyConnection). Si las credenciales o el
+   host son incorrectos, el proceso falla inmediatamente con un
+   mensaje claro en lugar de arrancar con datos en memoria.
+
    Ejecutar:
-     npm install
-     npm start
+     1. Copiar .env.example como .env y ajustar las credenciales MySQL
+     2. npm install
+     3. npm start
 
    El servidor corre por defecto en http://localhost:3000
    ===================================================================== */
 const express = require('express');
 const cors = require('cors');
+
+const { verifyConnection } = require('./db/connection');
 
 const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
@@ -112,6 +120,18 @@ app.use((err, req, res, next) => {
 // ---------------------------------------------------------------------
 // INICIO DEL SERVIDOR
 // ---------------------------------------------------------------------
-app.listen(PORT, () => {
-  console.log(`JobTracker API escuchando en http://localhost:${PORT}`);
-});
+// Antes de aceptar peticiones, se verifica que la conexión a MySQL
+// funcione (host, puerto, usuario, contraseña y base de datos
+// correctos). Si falla, el proceso termina con un mensaje claro en
+// lugar de quedar escuchando sin poder atender ninguna consulta.
+verifyConnection()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`JobTracker API escuchando en http://localhost:${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('No se pudo conectar a MySQL. Verifica tu archivo .env:');
+    console.error(err.message);
+    process.exit(1);
+  });

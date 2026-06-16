@@ -1,7 +1,7 @@
 {
   "name": "jobtracker-backend",
-  "version": "1.0.0",
-  "description": "Backend en memoria para JobTracker (Node.js + Express)",
+  "version": "2.0.0",
+  "description": "Backend en Node.js + Express + MySQL para JobTracker",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "mysql2": "^3.22.5"
+    "mysql2": "^3.10.0"
   }
 }
