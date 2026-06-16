@@ -1145,6 +1145,24 @@
 
 <script>
 /* =====================================================================
+   CONEXIÓN CON EL BACKEND
+   ---------------------------------------------------------------------
+   El backend Node.js + Express corre en esta URL base. Las funciones
+   getJobs(), getUsers(), getStats() y getActivity() (dentro de "api")
+   consumen estos endpoints reales mediante fetch:
+
+     GET  /jobs      -> lista de vacantes
+     GET  /users     -> lista de usuarios (sin contraseña)
+     GET  /stats     -> métricas del Dashboard
+     GET  /activity  -> actividad reciente (últimos 10 eventos)
+
+   El CRUD de vacantes (crear/editar/eliminar) y de usuarios también
+   se realiza contra este backend, para que las vistas y el Dashboard
+   siempre reflejen el estado real del servidor.
+   ===================================================================== */
+const API_BASE_URL = 'http://localhost:3000';
+
+/* =====================================================================
    ESTADO GLOBAL
    ---------------------------------------------------------------------
    Estado en memoria de la aplicación: sesión actual, datos cargados
@@ -1161,10 +1179,16 @@ const state = {
   // Colecciones de datos
   vacantes: [],
   usuarios: [],
+  // Lista de usuarios obtenida de GET /users (backend), usada para la
+  // tabla del panel de Usuarios y para el total de "Usuarios registrados".
+  // state.usuarios se mantiene aparte para no romper el login/roles locales.
+  usuariosBackend: [],
   seguimientos: [],
   adminRequests: [],
   // Registro de actividad reciente (máx. 10 eventos, los más nuevos primero)
   actividad: [],
+  // Caché de la última respuesta de GET /stats (para el Dashboard)
+  stats: null,
 
   // referencia al registro que se desea eliminar (usado por el modal)
   pendingDelete: null // { type: 'vacante' | 'usuario', id: number }
@@ -1255,7 +1279,31 @@ const vacantesSeed = [
    La firma (parámetros y valor de retorno como Promise) ya es
    compatible con fetch, por lo que el resto de la app no necesita
    cambios estructurales.
+
+   NOTA DE INTEGRACIÓN:
+   Las funciones getJobs(), getUsers(), getStats() y getActivity(),
+   así como el CRUD de vacantes y usuarios, ya están conectadas al
+   backend real mediante fetchJSON() (ver más abajo). El resto de la
+   capa "api" (login, registro, seguimientos, solicitudes, perfil)
+   sigue trabajando sobre el estado local, tal como antes.
    ===================================================================== */
+
+// --- Helper de bajo nivel para llamadas fetch al backend ---
+// Centraliza el manejo de errores HTTP y el parseo de JSON.
+function fetchJSON(path, options = {}) {
+  return fetch(`${API_BASE_URL}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...options
+  }).then(res => {
+    if (!res.ok) {
+      return res.json()
+        .catch(() => ({}))
+        .then(body => Promise.reject(new Error(body.error || `Error ${res.status} al consultar ${path}`)));
+    }
+    return res.json();
+  });
+}
+
 const api = {
 
   // ---------- AUTENTICACIÓN ----------
@@ -1307,92 +1355,68 @@ const api = {
     return Promise.resolve({ success: true });
   },
 
-  // ---------- VACANTES ----------
+  // ---------- VACANTES (conectado al backend: GET/POST/PUT/DELETE /jobs) ----------
+  // getJobs() es el nombre "oficial" pedido para la integración;
+  // getVacantes() se mantiene como alias para no romper llamadas existentes.
+  getJobs() {
+    return fetchJSON('/jobs');
+  },
   getVacantes() {
-    return Promise.resolve([...state.vacantes]);
+    return api.getJobs();
   },
   createVacante(data) {
-    const nueva = {
-      id: nextVacanteId++,
-      fechaCreacion: data.fechaCreacion || new Date().toISOString().slice(0, 10),
-      ...data
-    };
-    state.vacantes.push(nueva);
-    logActivity('vacante_creada', `Vacante creada: ${nueva.cargo} en ${nueva.empresa}`, 'success');
-    return Promise.resolve(nueva);
+    return fetchJSON('/jobs', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
   },
   updateVacante(id, data) {
-    const idx = state.vacantes.findIndex(v => v.id === id);
-    if (idx !== -1) {
-      const anterior = state.vacantes[idx];
-      const estadoCambio = data.estado && data.estado !== anterior.estado;
-      state.vacantes[idx] = { ...anterior, ...data };
-
-      if (estadoCambio) {
-        logActivity(
-          'estado_cambiado',
-          `Estado actualizado: ${anterior.cargo} en ${anterior.empresa} → ${data.estado}`,
-          'info'
-        );
-      } else {
-        logActivity(
-          'vacante_editada',
-          `Vacante editada: ${state.vacantes[idx].cargo} en ${state.vacantes[idx].empresa}`,
-          'accent'
-        );
-      }
-
-      return Promise.resolve(state.vacantes[idx]);
-    }
-    return Promise.reject(new Error('Vacante no encontrada'));
+    return fetchJSON(`/jobs/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
   },
   deleteVacante(id) {
-    const vacante = state.vacantes.find(v => v.id === id);
-    state.vacantes = state.vacantes.filter(v => v.id !== id);
-    if (vacante) {
-      logActivity('vacante_eliminada', `Vacante eliminada: ${vacante.cargo} en ${vacante.empresa}`, 'danger');
-    }
-    return Promise.resolve({ success: true });
+    return fetchJSON(`/jobs/${id}`, {
+      method: 'DELETE'
+    });
   },
 
-  // ---------- USUARIOS ----------
-  // Futuro backend: requiere rol ADMIN (middleware de autorización)
+  // ---------- USUARIOS (conectado al backend: GET/POST/PUT/DELETE /users) ----------
+  // getUsers() es el nombre "oficial" pedido para la integración;
+  // getUsuarios() se mantiene como alias para no romper llamadas existentes.
+  getUsers() {
+    return fetchJSON('/users');
+  },
   getUsuarios() {
-    return Promise.resolve(state.usuarios.map(stripPassword));
+    return api.getUsers();
   },
   createUsuario(data) {
-    const existe = state.usuarios.find(u => u.correo.toLowerCase() === data.correo.toLowerCase());
-    if (existe) {
-      return Promise.reject(new Error('Ya existe un usuario con ese correo.'));
-    }
-    const nuevo = {
-      id: nextUsuarioId++,
-      nombre: data.nombre,
-      apellidos: data.apellidos || '',
-      correo: data.correo,
-      password: data.password || 'changeme123',
-      rol: data.rol || 'USER',
-      estadoVerificacion: data.estadoVerificacion || 'pendiente_verificacion',
-      telefono: data.telefono || '',
-      ciudad: data.ciudad || '',
-      linkedin: data.linkedin || '',
-      github: data.github || ''
-    };
-    state.usuarios.push(nuevo);
-    return Promise.resolve(stripPassword(nuevo));
+    return fetchJSON('/users', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
   },
   updateUsuario(id, data) {
-    const idx = state.usuarios.findIndex(u => u.id === id);
-    if (idx !== -1) {
-      state.usuarios[idx] = { ...state.usuarios[idx], ...data };
-      return Promise.resolve(stripPassword(state.usuarios[idx]));
-    }
-    return Promise.reject(new Error('Usuario no encontrado'));
+    return fetchJSON(`/users/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
   },
   deleteUsuario(id) {
-    state.usuarios = state.usuarios.filter(u => u.id !== id);
-    return Promise.resolve({ success: true });
+    return fetchJSON(`/users/${id}`, {
+      method: 'DELETE'
+    });
   },
+
+  // ---------- DASHBOARD (conectado al backend: GET /stats y GET /activity) ----------
+  getStats() {
+    return fetchJSON('/stats');
+  },
+  getActivity() {
+    return fetchJSON('/activity');
+  },
+
 
   // ---------- SEGUIMIENTOS ----------
   getSeguimientos() {
@@ -1470,19 +1494,52 @@ const api = {
       logActivity('solicitud_rechazada', `Solicitud de Administrador rechazada para ${state.adminRequests[idx].nombre}`, 'danger');
     }
 
-    // Si se aprueba, el usuario solicitante pasa a ser ADMIN
-    if (estado === 'APROBADA') {
-      const usuarioIdx = state.usuarios.findIndex(u => u.id === state.adminRequests[idx].usuarioId);
-      if (usuarioIdx !== -1) {
-        state.usuarios[usuarioIdx].rol = 'ADMIN';
-        // Si el usuario afectado es el que tiene la sesión activa, actualizarla
-        if (state.currentUser && state.currentUser.id === state.usuarios[usuarioIdx].id) {
-          state.currentUser = stripPassword(state.usuarios[usuarioIdx]);
-        }
-      }
+    if (estado !== 'APROBADA') {
+      return Promise.resolve(state.adminRequests[idx]);
     }
 
-    return Promise.resolve(state.adminRequests[idx]);
+    // Si se aprueba, el usuario solicitante pasa a ser ADMIN.
+    // CORRECCIÓN DE BUG: además de actualizar el rol en el estado local
+    // (state.usuarios, usado para login/sesión), también hay que
+    // sincronizar el cambio con el backend real (PUT /users/:id), ya
+    // que la tabla de Usuarios se pinta con state.usuariosBackend,
+    // obtenido de GET /users. Sin este paso, el backend seguía
+    // devolviendo el rol antiguo (USER) y la tabla no se actualizaba
+    // hasta una edición o recarga posterior que sí tocara ese registro.
+    const usuarioIdx = state.usuarios.findIndex(u => u.id === state.adminRequests[idx].usuarioId);
+    if (usuarioIdx === -1) {
+      return Promise.resolve(state.adminRequests[idx]);
+    }
+
+    state.usuarios[usuarioIdx].rol = 'ADMIN';
+    const correoUsuario = state.usuarios[usuarioIdx].correo;
+
+    // Si el usuario afectado es el que tiene la sesión activa, actualizarla
+    if (state.currentUser && state.currentUser.id === state.usuarios[usuarioIdx].id) {
+      state.currentUser = stripPassword(state.usuarios[usuarioIdx]);
+    }
+
+    // Busca el registro correspondiente en el backend por correo
+    // (los IDs locales y los del backend son independientes) y
+    // actualiza su rol a ADMIN para que GET /users quede sincronizado.
+    return api.getUsers()
+      .then(usuariosBackend => {
+        const backendUser = usuariosBackend.find(
+          u => u.correo.toLowerCase() === correoUsuario.toLowerCase()
+        );
+        if (!backendUser) {
+          // El usuario no existe como tal en el backend (por ejemplo,
+          // fue registrado solo localmente): no hay nada que sincronizar.
+          return;
+        }
+        return api.updateUsuario(backendUser.id, { rol: 'ADMIN' });
+      })
+      .catch(err => {
+        // No bloquea la aprobación de la solicitud si la sincronización
+        // con el backend falla; solo se registra en consola.
+        console.error('No se pudo sincronizar el rol ADMIN con el backend:', err);
+      })
+      .then(() => state.adminRequests[idx]);
   }
 };
 
@@ -1651,29 +1708,59 @@ function applyRoleVisibility() {
 /* =====================================================================
    RENDERIZADO — DASHBOARD
    ---------------------------------------------------------------------
-   Calcula y pinta las tarjetas de estadísticas y la tabla de últimas
-   vacantes. Se invoca automáticamente cada vez que cambian los datos
-   de vacantes (crear, editar, eliminar o cambiar de estado).
+   Obtiene las métricas desde el backend (GET /stats) y la actividad
+   reciente (GET /activity), y pinta las tarjetas de estadísticas, el
+   gráfico de distribución, la actividad reciente, el resumen rápido
+   y la tabla de últimas vacantes.
+
+   Se invoca automáticamente cada vez que cambian los datos de
+   vacantes (crear, editar, eliminar o cambiar de estado), por lo que
+   el Dashboard siempre refleja el estado real del servidor.
    ===================================================================== */
 function renderDashboard() {
-  const vacantes = state.vacantes;
+  // GET /stats y GET /activity en paralelo
+  return Promise.all([
+    api.getStats().catch(err => {
+      console.error('Error al obtener /stats:', err);
+      return null;
+    }),
+    api.getActivity().catch(err => {
+      console.error('Error al obtener /activity:', err);
+      return [];
+    })
+  ]).then(([stats, actividad]) => {
+    state.stats = stats;
+    state.actividad = actividad || [];
 
-  const total = vacantes.length;
-  // Todas las vacantes registradas representan una aplicación enviada
-  const aplicaciones = total;
-  const entrevistas = vacantes.filter(v => v.estado === 'Entrevista').length;
-  const ofertas = vacantes.filter(v => v.estado === 'Oferta').length;
-  const rechazos = vacantes.filter(v => v.estado === 'Rechazada').length;
+    renderStatCards();
+    renderUltimasVacantes();
+    renderEstadosChart();
+    renderActivityFeed();
+    renderQuickSummary();
+  });
+}
+
+// --- Tarjetas de estadísticas principales (a partir de /stats) ---
+function renderStatCards() {
+  const grid = document.getElementById('statsGrid');
+  if (!grid) return;
+
+  // Si /stats todavía no respondió (o falló), se calculan localmente
+  // a partir de state.vacantes como respaldo.
+  const totales = state.stats && state.stats.totales
+    ? state.stats.totales
+    : calcularTotalesLocal();
+
+  const total = totales.vacantesTotales;
 
   const stats = [
-    { label: 'Vacantes Totales', value: total, color: 'var(--accent)' },
-    { label: 'Aplicaciones Enviadas', value: aplicaciones, color: 'var(--info)' },
-    { label: 'Entrevistas', value: entrevistas, color: 'var(--warning)' },
-    { label: 'Ofertas', value: ofertas, color: 'var(--success)' },
-    { label: 'Rechazos', value: rechazos, color: 'var(--danger)' }
+    { label: 'Vacantes Totales', value: totales.vacantesTotales, color: 'var(--accent)' },
+    { label: 'Aplicaciones Enviadas', value: totales.aplicacionesEnviadas, color: 'var(--info)' },
+    { label: 'Entrevistas', value: totales.entrevistas, color: 'var(--warning)' },
+    { label: 'Ofertas', value: totales.ofertas, color: 'var(--success)' },
+    { label: 'Rechazos', value: totales.rechazos, color: 'var(--danger)' }
   ];
 
-  const grid = document.getElementById('statsGrid');
   grid.innerHTML = stats.map(s => {
     const pct = total > 0 ? Math.round((s.value / total) * 100) : 0;
     return `
@@ -1684,10 +1771,27 @@ function renderDashboard() {
       </div>
     `;
   }).join('');
+}
 
-  // Tabla de últimas vacantes (las 5 más recientes)
+// Respaldo: calcula los totales a partir de state.vacantes si /stats no está disponible
+function calcularTotalesLocal() {
+  const vacantes = state.vacantes;
+  const total = vacantes.length;
+  return {
+    vacantesTotales: total,
+    aplicacionesEnviadas: total,
+    entrevistas: vacantes.filter(v => v.estado === 'Entrevista').length,
+    ofertas: vacantes.filter(v => v.estado === 'Oferta').length,
+    rechazos: vacantes.filter(v => v.estado === 'Rechazada').length
+  };
+}
+
+// --- Tabla de últimas vacantes (las 5 más recientes según state.vacantes) ---
+function renderUltimasVacantes() {
   const tbody = document.getElementById('dashboardVacantesBody');
-  const recientes = [...vacantes].slice(-5).reverse();
+  if (!tbody) return;
+
+  const recientes = [...state.vacantes].slice(-5).reverse();
 
   if (recientes.length === 0) {
     tbody.innerHTML = `<tr><td colspan="4"><div class="empty-state">Aún no has registrado vacantes. Ve a la sección "Vacantes" para empezar.</div></td></tr>`;
@@ -1701,11 +1805,6 @@ function renderDashboard() {
       </tr>
     `).join('');
   }
-
-  // Widgets adicionales del dashboard
-  renderEstadosChart();
-  renderActivityFeed();
-  renderQuickSummary();
 }
 
 
@@ -1730,9 +1829,15 @@ function renderEstadosChart() {
     'Rechazada': '#F87171'
   };
 
-  const datos = estadosOrden.map(estado =>
-    state.vacantes.filter(v => v.estado === estado).length
-  );
+  // Usa la distribución que devuelve /stats; si no está disponible,
+  // se calcula localmente a partir de state.vacantes como respaldo.
+  const distribucion = (state.stats && state.stats.distribucionEstados)
+    ? state.stats.distribucionEstados
+    : Object.fromEntries(estadosOrden.map(estado => [
+        estado, state.vacantes.filter(v => v.estado === estado).length
+      ]));
+
+  const datos = estadosOrden.map(estado => distribucion[estado] || 0);
 
   if (estadosChartInstance) {
     estadosChartInstance.data.datasets[0].data = datos;
@@ -1826,50 +1931,32 @@ function renderActivityFeed() {
 /* ---------------------------------------------------------------------
    Resumen rápido
    -----------------------------------------------------------------
-   Calcula: empresa con más vacantes, última vacante creada y total
-   de usuarios registrados.
+   Usa el objeto "resumen" devuelto por GET /stats: empresa con más
+   vacantes, última vacante creada y total de usuarios registrados.
+   Si /stats no está disponible, se calcula localmente como respaldo.
    --------------------------------------------------------------------- */
 function renderQuickSummary() {
   const container = document.getElementById('quickSummary');
   if (!container) return;
 
-  // Empresa con más vacantes registradas
-  let empresaTop = '—';
-  let empresaTopCount = 0;
-  if (state.vacantes.length > 0) {
-    const conteo = {};
-    state.vacantes.forEach(v => {
-      conteo[v.empresa] = (conteo[v.empresa] || 0) + 1;
-    });
-    const ordenado = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
-    empresaTop = ordenado[0][0];
-    empresaTopCount = ordenado[0][1];
-  }
+  const resumen = (state.stats && state.stats.resumen)
+    ? state.stats.resumen
+    : calcularResumenLocal();
 
-  // Última vacante creada (la más reciente por fecha de creación, o la última del arreglo)
-  let ultimaVacante = '—';
-  let ultimaVacanteSub = '';
-  if (state.vacantes.length > 0) {
-    const ultima = [...state.vacantes].sort((a, b) =>
-      (a.fechaCreacion || '').localeCompare(b.fechaCreacion || '')
-    ).pop();
-    ultimaVacante = `${ultima.cargo}`;
-    ultimaVacanteSub = `${ultima.empresa} · ${formatDate(ultima.fechaCreacion)}`;
-  }
-
-  // Total de usuarios registrados
-  const totalUsuarios = state.usuarios.length;
+  const empresaTop = resumen.empresaTop || { nombre: '—', total: 0 };
+  const ultimaVacante = resumen.ultimaVacante; // { cargo, empresa, fechaCreacion } o null
+  const totalUsuarios = resumen.totalUsuarios ?? state.usuarios.length;
 
   const items = [
     {
       label: 'Empresa con más vacantes',
-      value: empresaTop,
-      sub: state.vacantes.length > 0 ? `${empresaTopCount} vacante(s)` : ''
+      value: empresaTop.nombre,
+      sub: empresaTop.total > 0 ? `${empresaTop.total} vacante(s)` : ''
     },
     {
       label: 'Última vacante creada',
-      value: ultimaVacante,
-      sub: ultimaVacanteSub
+      value: ultimaVacante ? ultimaVacante.cargo : '—',
+      sub: ultimaVacante ? `${ultimaVacante.empresa} · ${formatDate(ultimaVacante.fechaCreacion)}` : ''
     },
     {
       label: 'Usuarios registrados',
@@ -1884,6 +1971,31 @@ function renderQuickSummary() {
       <div class="summary-value">${it.value}${it.sub ? `<small>${it.sub}</small>` : ''}</div>
     </div>
   `).join('');
+}
+
+// Respaldo: calcula el resumen rápido a partir de state.vacantes / state.usuarios
+function calcularResumenLocal() {
+  let empresaTop = { nombre: '—', total: 0 };
+  if (state.vacantes.length > 0) {
+    const conteo = {};
+    state.vacantes.forEach(v => { conteo[v.empresa] = (conteo[v.empresa] || 0) + 1; });
+    const ordenado = Object.entries(conteo).sort((a, b) => b[1] - a[1]);
+    empresaTop = { nombre: ordenado[0][0], total: ordenado[0][1] };
+  }
+
+  let ultimaVacante = null;
+  if (state.vacantes.length > 0) {
+    const ultima = [...state.vacantes].sort((a, b) =>
+      (a.fechaCreacion || '').localeCompare(b.fechaCreacion || '')
+    ).pop();
+    ultimaVacante = { cargo: ultima.cargo, empresa: ultima.empresa, fechaCreacion: ultima.fechaCreacion };
+  }
+
+  return {
+    empresaTop,
+    ultimaVacante,
+    totalUsuarios: state.usuarios.length
+  };
 }
 
 
@@ -2017,11 +2129,12 @@ function renderUsuarios() {
   if (!isAdmin) return;
 
   const tbody = document.getElementById('usuariosBody');
+  const usuarios = state.usuariosBackend;
 
-  if (state.usuarios.length === 0) {
+  if (usuarios.length === 0) {
     tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state">No hay usuarios registrados.</div></td></tr>`;
   } else {
-    tbody.innerHTML = state.usuarios.map(u => `
+    tbody.innerHTML = usuarios.map(u => `
       <tr>
         <td>${u.nombre} ${u.apellidos || ''}</td>
         <td>${u.correo}</td>
@@ -2149,15 +2262,36 @@ function renderAdminRequestStatus() {
    RENDERIZADO — GENERAL
    ===================================================================== */
 // Renderiza todo lo que depende de los datos actuales.
-// Se llama tras cada operación de creación, edición o eliminación,
-// garantizando que el Dashboard y las tablas siempre estén sincronizados.
+// Primero recarga las vacantes (GET /jobs) y, si el usuario es ADMIN,
+// la lista de usuarios (GET /users). Luego pinta el Dashboard
+// (GET /stats + GET /activity) y todas las tablas, garantizando que
+// la UI siempre refleje el estado real del backend.
 function renderAll() {
-  renderDashboard();
-  renderVacantes();
-  renderSeguimientoSelect();
-  renderSeguimientos();
-  renderUsuarios();
-  renderPerfil();
+  const cargarVacantes = api.getJobs()
+    .then(vacantes => { state.vacantes = vacantes; })
+    .catch(err => {
+      console.error('Error al obtener /jobs:', err);
+      // Mantiene los datos previos en caso de error de red
+    });
+
+  const isAdmin = state.currentUser && state.currentUser.rol === 'ADMIN';
+  const cargarUsuarios = isAdmin
+    ? api.getUsers()
+        .then(usuarios => { state.usuariosBackend = usuarios; })
+        .catch(err => {
+          console.error('Error al obtener /users:', err);
+        })
+    : Promise.resolve();
+
+  return Promise.all([cargarVacantes, cargarUsuarios]).then(() => {
+    return renderDashboard();
+  }).then(() => {
+    renderVacantes();
+    renderSeguimientoSelect();
+    renderSeguimientos();
+    renderUsuarios();
+    renderPerfil();
+  });
 }
 
 
@@ -2193,9 +2327,23 @@ function navigateTo(pageId) {
   document.getElementById('pageTitle').textContent = meta.title;
   document.getElementById('pageSubtitle').textContent = meta.subtitle;
 
-  // Si entra a usuarios, asegúrate de refrescar la vista de permitido/denegado
-  if (pageId === 'usuarios') {
-    renderUsuarios();
+  // Al entrar a secciones respaldadas por el backend, se recargan los
+  // datos reales antes de pintar, para que siempre estén actualizados.
+  if (pageId === 'dashboard') {
+    renderDashboard();
+  } else if (pageId === 'vacantes') {
+    api.getJobs()
+      .then(vacantes => { state.vacantes = vacantes; renderVacantes(); })
+      .catch(err => console.error('Error al obtener /jobs:', err));
+  } else if (pageId === 'usuarios') {
+    const isAdmin = state.currentUser && state.currentUser.rol === 'ADMIN';
+    if (isAdmin) {
+      api.getUsers()
+        .then(usuarios => { state.usuariosBackend = usuarios; renderUsuarios(); })
+        .catch(err => console.error('Error al obtener /users:', err));
+    } else {
+      renderUsuarios();
+    }
   }
 
   // Cerrar menú móvil al navegar
@@ -2237,15 +2385,19 @@ formVacante.addEventListener('submit', (e) => {
     ? api.updateVacante(Number(id), data)
     : api.createVacante(data);
 
-  action.then(() => {
-    formVacante.reset();
-    document.getElementById('vacanteId').value = '';
-    btnVacanteSubmit.textContent = '+ Crear vacante';
-    btnVacanteCancel.style.display = 'none';
-    // Recalcula Dashboard y demás tablas: crear, editar o cambiar de
-    // estado una vacante siempre dispara renderAll().
-    renderAll();
-  });
+  action
+    .then(() => {
+      formVacante.reset();
+      document.getElementById('vacanteId').value = '';
+      btnVacanteSubmit.textContent = '+ Crear vacante';
+      btnVacanteCancel.style.display = 'none';
+      // Recalcula Dashboard y demás tablas: crear, editar o cambiar de
+      // estado una vacante siempre dispara renderAll().
+      renderAll();
+    })
+    .catch(err => {
+      alert(err.message);
+    });
 });
 
 btnVacanteCancel.addEventListener('click', () => {
@@ -2386,7 +2538,9 @@ document.getElementById('usuariosContent').addEventListener('click', (e) => {
   const id = Number(btn.dataset.id);
 
   if (btn.dataset.action === 'edit-usuario') {
-    const u = state.usuarios.find(x => x.id === id);
+    // Se busca en state.usuariosBackend porque la tabla se pinta con
+    // los datos reales obtenidos de GET /users.
+    const u = state.usuariosBackend.find(x => x.id === id);
     if (!u) return;
     document.getElementById('usuarioId').value = u.id;
     document.getElementById('usuarioNombre').value = u.nombre;
@@ -2482,11 +2636,16 @@ document.getElementById('confirmAccept').addEventListener('click', () => {
     action = api.deleteUsuario(pending.id);
   }
 
-  action.then(() => {
-    closeConfirmModal();
-    // Eliminar una vacante también recalcula automáticamente el Dashboard
-    renderAll();
-  });
+  action
+    .then(() => {
+      closeConfirmModal();
+      // Eliminar una vacante también recalcula automáticamente el Dashboard
+      renderAll();
+    })
+    .catch(err => {
+      closeConfirmModal();
+      alert(err.message);
+    });
 });
 
 // Cerrar modal al hacer click fuera del cuadro
@@ -2502,33 +2661,29 @@ confirmModal.addEventListener('click', (e) => {
    y deja la aplicación lista mostrando la pantalla de autenticación.
    ===================================================================== */
 function seedData() {
-  // Carga los usuarios de ejemplo (con contraseñas simuladas)
+  // Carga los usuarios de ejemplo en el estado LOCAL (solo para login/roles).
+  // Estos usuarios NO se envían al backend: state.usuarios se usa
+  // únicamente para autenticación y gestión de roles en el frontend,
+  // tal como antes de la integración.
   usuariosSeed.forEach(u => {
     state.usuarios.push({ id: nextUsuarioId++, ...u });
   });
 
-  // Carga las vacantes de ejemplo
-  const vacantePromises = vacantesSeed.map(v => api.createVacante(v));
-
-  return Promise.all(vacantePromises).then((vacantesCreadas) => {
-    // Seguimientos de ejemplo, ligados a las vacantes recién creadas
-    const seguimientosSeed = [
-      { vacanteId: vacantesCreadas[0].id, fecha: '2026-05-20', tipo: 'Correo', descripcion: 'Confirmación de recepción de la hoja de vida.' },
-      { vacanteId: vacantesCreadas[0].id, fecha: '2026-06-02', tipo: 'Entrevista', descripcion: 'Entrevista técnica con el equipo de ingeniería.' },
-      { vacanteId: vacantesCreadas[1].id, fecha: '2026-05-28', tipo: 'Llamada', descripcion: 'Llamada de reclutadora para validar disponibilidad.' },
-      { vacanteId: vacantesCreadas[3].id, fecha: '2026-06-05', tipo: 'Correo', descripcion: 'Recepción de carta de oferta laboral.' }
-    ];
-
-    const seguimientoPromises = seguimientosSeed.map(s => api.createSeguimiento(s));
-    return Promise.all(seguimientoPromises);
-  });
+  // NOTA DE INTEGRACIÓN: las vacantes y seguimientos de ejemplo ya NO
+  // se crean aquí. El backend (GET /jobs, /seguimientos) ya inicia
+  // con su propio seed de datos; volver a crearlos aquí duplicaría
+  // las vacantes en cada carga de la página.
+  return Promise.resolve();
 }
 
 function init() {
   // Establece la fecha de hoy como valor por defecto en el formulario de seguimientos
   document.getElementById('seguimientoFecha').valueAsDate = new Date();
 
-  // Carga los datos simulados iniciales (vacantes, usuarios, seguimientos)
+  // Carga los usuarios de ejemplo para login/roles (estado local).
+  // Las vacantes, usuarios (tabla ADMIN), estadísticas y actividad
+  // se cargan en tiempo real desde el backend al iniciar sesión
+  // (ver enterApp() -> renderAll() / navigateTo('dashboard')).
   seedData().then(() => {
     // Al iniciar, no hay sesión activa: se muestra la pantalla de login/registro.
     // appRoot permanece oculto hasta que el usuario inicie sesión correctamente.
