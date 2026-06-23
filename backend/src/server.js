@@ -113,8 +113,21 @@ app.use((req, res) => {
 // MANEJO DE ERRORES
 // ---------------------------------------------------------------------
 app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ error: 'Error interno del servidor.' });
+  console.error('--- ERROR NO CONTROLADO ---');
+  console.error('Ruta:', req.method, req.originalUrl);
+  console.error('Mensaje:', err.message);
+  console.error('Código MySQL:', err.code || '(sin código)');
+  console.error('SQL:', err.sql || '(sin SQL asociado)');
+  console.error(err.stack);
+
+  // Se incluye el mensaje real (no solo "Error interno del servidor")
+  // para poder diagnosticar rápido problemas de columnas/ENUM en MySQL
+  // desde la respuesta HTTP, sin tener que mirar la consola del server.
+  res.status(500).json({
+    error: 'Error interno del servidor.',
+    detalle: err.message,
+    codigoMySQL: err.code || null
+  });
 });
 
 // ---------------------------------------------------------------------

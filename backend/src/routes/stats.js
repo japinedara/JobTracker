@@ -22,23 +22,34 @@
    en memoria ahora se hace con consultas SQL (COUNT, GROUP BY, ORDER
    BY + LIMIT) a través de vacantesRepo y usuariosRepo. El shape de la
    respuesta JSON es exactamente el mismo que antes.
+
+   CORRECCIÓN DE BUG (vacantes visibles para todos): todas las
+   métricas relacionadas con vacantes (totales, distribución por
+   estado, empresa top, última vacante) ahora se calculan SOLO sobre
+   las vacantes del usuario actual (identificado mediante
+   getCurrentUserId). "totalUsuarios" se mantiene global a propósito,
+   ya que es información del sistema, no de las vacantes de una
+   persona en particular.
    ===================================================================== */
 const express = require('express');
 const router = express.Router();
 const vacantesRepo = require('../db/repositories/vacantesRepo');
 const usuariosRepo = require('../db/repositories/usuariosRepo');
 const actividadRepo = require('../db/repositories/actividadRepo');
+const { getCurrentUserId } = require('../utils/helpers');
 
 const ESTADOS = ['Aplicada', 'En revisión', 'Entrevista', 'Oferta', 'Rechazada'];
 
 router.get('/', async (req, res, next) => {
   try {
+    const usuarioId = getCurrentUserId(req);
+
     const [total, porEstado, empresaTop, ultimaVacante, totalUsuarios, actividadReciente] =
       await Promise.all([
-        vacantesRepo.count(),
-        vacantesRepo.countByEstado(),
-        vacantesRepo.empresaConMasVacantes(),
-        vacantesRepo.ultimaCreada(),
+        vacantesRepo.count(usuarioId),
+        vacantesRepo.countByEstado(usuarioId),
+        vacantesRepo.empresaConMasVacantes(usuarioId),
+        vacantesRepo.ultimaCreada(usuarioId),
         usuariosRepo.count(),
         actividadRepo.findRecent(10)
       ]);

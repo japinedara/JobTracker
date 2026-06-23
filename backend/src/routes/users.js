@@ -8,11 +8,16 @@
 
    GET    /users/:id/profile -> obtener perfil de un usuario específico
    PUT    /users/:id/profile -> actualizar perfil (campos personales)
+   PUT    /users/:id/password -> cambiar contraseña (requiere la actual)
 
    MIGRACIÓN A MYSQL: todas las operaciones que antes mutaban el
    arreglo store.usuarios ahora se ejecutan contra la tabla `usuarios`
    mediante usuariosRepo (SELECT/INSERT/UPDATE/DELETE). Las respuestas
    JSON mantienen exactamente el mismo shape que antes.
+
+   CORRECCIÓN DE BUG: se agregó PUT /users/:id/password (faltaba la
+   funcionalidad de cambio de contraseña en la sección Perfil del
+   frontend). Valida la contraseña actual antes de aceptar la nueva.
 
    En un backend real, estas rutas estarían protegidas por un
    middleware de autenticación (JWT) y autorización (rol ADMIN para
@@ -145,6 +150,41 @@ router.put('/:id/profile', async (req, res, next) => {
     });
 
     res.json(stripPassword(actualizado));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// --- PUT /users/:id/password ---
+// NUEVO ENDPOINT: cambio de contraseña desde la sección "Perfil".
+// Requiere la contraseña actual (passwordActual) para validar la
+// identidad antes de aceptar la nueva (passwordNueva).
+router.put('/:id/password', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const actual = await usuariosRepo.findById(id);
+
+    if (!actual) {
+      return res.status(404).json({ error: 'Usuario no encontrado.' });
+    }
+
+    const { passwordActual, passwordNueva } = req.body;
+
+    if (!passwordActual || !passwordNueva) {
+      return res.status(400).json({ error: 'La contraseña actual y la nueva son obligatorias.' });
+    }
+
+    if (passwordActual !== actual.password) {
+      return res.status(401).json({ error: 'La contraseña actual no es correcta.' });
+    }
+
+    if (String(passwordNueva).length < 6) {
+      return res.status(400).json({ error: 'La nueva contraseña debe tener al menos 6 caracteres.' });
+    }
+
+    await usuariosRepo.update(id, { password: passwordNueva });
+
+    res.json({ success: true });
   } catch (err) {
     next(err);
   }

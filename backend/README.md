@@ -1,8 +1,31 @@
 # JobTracker API (Backend)
 
+> **Actualización — correcciones de persistencia y aislamiento por usuario**
+> Se corrigieron 6 problemas: registro desde login no persistía, seguimientos
+> no se guardaban, solicitudes de administrador no se guardaban, aprobar una
+> solicitud no actualizaba el rol en BD, vacantes visibles entre usuarios, y
+> faltaba cambio de contraseña en Perfil. Ver detalle al final de este archivo.
+
 Backend en **Node.js + Express + MySQL** (vía `mysql2`), diseñado para
 conectarse directamente con el frontend de JobTracker (`index.html`)
 mediante `fetch()`.
+
+## ⚠️ Acción requerida en tu base de datos
+
+Si ya tienes la base de datos `jobtracker` creada, ejecuta el script de
+migración antes de arrancar el backend:
+
+```bash
+mysql -u root -p jobtracker < sql/migration_usuario_id.sql
+```
+
+Esto agrega la columna `usuario_id` a la tabla `vacantes` (con FK hacia
+`usuarios`), necesaria para que cada usuario vea únicamente sus propias
+vacantes y seguimientos. Revisa el script: por defecto asigna las vacantes
+existentes al primer usuario con rol `ADMIN`.
+
+Si vas a crear la base de datos desde cero, usa directamente
+`sql/schema.sql` (ya incluye `usuario_id` en la definición de `vacantes`).
 
 ## Instalación y ejecución
 
@@ -98,8 +121,23 @@ los que se usarán.)
 | DELETE | `/users/:id`                 | Eliminar usuario                                      |
 | GET    | `/users/:id/profile`         | Obtener perfil de un usuario                          |
 | PUT    | `/users/:id/profile`          | Actualizar perfil (nombre, apellidos, correo, teléfono, ciudad, linkedin, github). `rol` y `estadoVerificacion` se ignoran. |
+| PUT    | `/users/:id/password`          | Cambiar contraseña: `{ passwordActual, passwordNueva }`. Valida la actual antes de aceptar la nueva (mín. 6 caracteres). |
 
-### Vacantes (`/jobs`)
+### Identificación del usuario actual (header `x-user-id`)
+
+El proyecto no usa JWT verificado en servidor. Para que el backend sepa
+qué usuario está pidiendo qué (y así filtrar vacantes/seguimientos por
+dueño), el frontend envía el id del usuario con sesión activa en el
+header `x-user-id` en cada petición relevante. También se acepta como
+`?usuarioId=` en query string o `usuarioId` en el body, como alternativa.
+
+- Si el header no se envía, `/jobs` y `/seguimientos` devuelven **todos**
+  los registros (comportamiento anterior, por compatibilidad).
+- Si se envía, `/jobs` y `/seguimientos` filtran solo lo del usuario.
+- `PUT/DELETE /jobs/:id` y las rutas de seguimientos por vacante devuelven
+  `403` si la vacante no pertenece al usuario identificado.
+
+
 
 | Método | Ruta                          | Descripción                                              |
 |--------|--------------------------------|---------------------------------------------------------------|
@@ -205,4 +243,77 @@ jobtracker-backend/
         ├── activity.js                  # /activity
         └── stats.js                      # /stats
 ```
+
+---
+
+## Correcciones aplicadas (sesión de bugfixing)
+
+### 1. El registro desde login no persistía
+**Causa:** `index.html` nunca llamaba al backend para login/registro; usaba
+un arreglo local (`state.usuarios`) con dos usuarios de ejemplo hardcodeados.
+**Archivos:** `index.html` (funciones `api.login`, `api.register`, `api.logout`
+ahora hacen `fetch` real a `/api/auth/login`, `/api/auth/register`,
+`/api/auth/logout`). Backend sin cambios (ya estaba correcto).
+
+### 2. Los seguimientos no se guardaban
+**Causa:** misma razón: `api.getSeguimientos`/`api.createSeguimiento` en el
+frontend nunca llamaban a `/seguimientos`.
+**Archivos:** `index.html` (conectadas a `/seguimientos`); además
+`renderAll()` y `navigateTo()` ahora recargan `state.seguimientos` desde el
+backend (antes nadie lo hacía, así que aunque se guardara, la tabla no se
+refrescaba).
+
+### 3. Las solicitudes de administrador no se guardaban
+**Causa:** igual que los dos anteriores: `api.createAdminRequest`,
+`getAdminRequests`, `resolveAdminRequest` operaban sobre un arreglo local.
+**Archivos:** `index.html` (conectadas a `/applications`). El backend
+(`src/routes/applications.js`) ya estaba correcto.
+
+### 4. Aprobar una solicitud no actualizaba el rol en BD
+**Causa:** consecuencia directa del punto 3 — nunca llegaba ninguna
+solicitud real al backend para aprobar. Una vez conectado el punto 3,
+este problema queda resuelto automáticamente (la ruta backend ya hacía
+`UPDATE usuarios SET rol = 'ADMIN'` correctamente).
+**Archivos:** ninguno adicional; se simplificó `resolveAdminRequest` en
+`index.html` (ya no necesita el truco de buscar por correo entre frontend
+y backend, porque ahora comparten el mismo `usuarioId`).
+
+### 5. Vacantes visibles para todos los usuarios
+**Causa:** la tabla `vacantes` no tenía columna `usuario_id`; `GET /jobs`
+devolvía todas las filas sin filtrar.
+**Cambios SQL necesarios:** ejecutar `sql/migration_usuario_id.sql` sobre
+tu base de datos existente (agrega `usuario_id` + FK a `usuarios`).
+**Archivos backend:** `src/db/repositories/vacantesRepo.js` (acepta
+`usuarioId` para filtrar en `findAll`, `count`, `countByEstado`,
+`empresaConMasVacantes`, `ultimaCreada`), `src/db/repositories/seguimientosRepo.js`
+(`findAll` ahora hace `JOIN` con `vacantes` para filtrar por dueño),
+`src/routes/jobs.js` (filtra por usuario, exige `usuarioId` al crear,
+valida propiedad en editar/eliminar/seguimientos), `src/routes/seguimientos.js`
+(filtra y valida propiedad), `src/routes/stats.js` (las métricas de
+vacantes ahora son por usuario; `totalUsuarios` se mantiene global),
+`src/utils/helpers.js` (nueva función `getCurrentUserId`).
+**Archivos frontend:** `index.html` (`fetchJSON` envía automáticamente el
+header `x-user-id` con `state.currentUser.id` en cada petición).
+
+### 6. Faltaba cambio de contraseña en Perfil
+**Archivos backend:** `src/routes/users.js` (nuevo endpoint
+`PUT /users/:id/password`).
+**Archivos frontend:** `index.html` (nuevo panel "Cambiar contraseña" en
+la sección Perfil + función `api.changePassword`).
+
+### Resumen de archivos modificados
+
+Backend: `src/utils/helpers.js`, `src/db/repositories/vacantesRepo.js`,
+`src/db/repositories/seguimientosRepo.js`, `src/routes/jobs.js`,
+`src/routes/seguimientos.js`, `src/routes/stats.js`, `src/routes/users.js`,
+`sql/schema.sql` (actualizado), `sql/migration_usuario_id.sql` (nuevo).
+
+Frontend: `index.html` (capa `api` completa conectada al backend real;
+`renderAll`/`navigateTo`/`renderPerfil` ahora recargan seguimientos y
+solicitudes; nuevo panel de cambio de contraseña; limpieza de
+`state.usuarios`, seeds y contadores locales que ya no se usaban).
+
+**No se requieren cambios SQL adicionales más allá de
+`sql/migration_usuario_id.sql`** (o usar `sql/schema.sql` si creas la base
+de datos desde cero).
 

@@ -11,6 +11,12 @@
    fecha           ->  fecha
    tipo            ->  tipo
    descripcion     ->  descripcion
+
+   CORRECCIÓN DE BUG: la tabla `seguimientos` no tiene usuario_id
+   propio (un seguimiento pertenece a una vacante, y la vacante
+   pertenece a un usuario). Para que cada usuario solo vea sus propios
+   seguimientos, findAll() ahora acepta un `usuarioId` opcional y hace
+   JOIN con `vacantes` para filtrar por el dueño real.
    ===================================================================== */
 const { pool } = require('../connection');
 
@@ -25,8 +31,19 @@ function mapRow(row) {
   };
 }
 
-// --- SELECT * FROM seguimientos (historial completo) ---
-async function findAll() {
+// --- SELECT seguimientos.* FROM seguimientos JOIN vacantes [WHERE usuario_id = ?] ---
+// Si no se pasa usuarioId, devuelve el historial completo (uso interno/administrativo).
+async function findAll(usuarioId) {
+  if (usuarioId !== undefined && usuarioId !== null) {
+    const [rows] = await pool.query(
+      `SELECT s.* FROM seguimientos s
+       INNER JOIN vacantes v ON v.id = s.vacante_id
+       WHERE v.usuario_id = ?
+       ORDER BY s.fecha DESC, s.id DESC`,
+      [usuarioId]
+    );
+    return rows.map(mapRow);
+  }
   const [rows] = await pool.query('SELECT * FROM seguimientos ORDER BY fecha DESC, id DESC');
   return rows.map(mapRow);
 }

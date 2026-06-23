@@ -1108,6 +1108,34 @@
         </div>
       </div>
 
+      <!-- Cambiar contraseña -->
+      <div class="panel">
+        <div class="panel-header">
+          <h3 class="section-title" style="margin:0;">Cambiar contraseña</h3>
+        </div>
+        <div class="panel-body">
+          <form id="formPassword">
+            <div class="auth-error" id="passwordError"></div>
+            <div class="auth-success" id="passwordSuccess"></div>
+            <div class="form-grid">
+              <div>
+                <label for="passwordActual">Contraseña actual</label>
+                <input type="password" id="passwordActual" required placeholder="••••••••">
+              </div>
+              <div>
+                <label for="passwordNueva">Nueva contraseña</label>
+                <input type="password" id="passwordNueva" required placeholder="••••••••">
+              </div>
+              <div>
+                <label for="passwordNuevaConfirm">Confirmar nueva contraseña</label>
+                <input type="password" id="passwordNuevaConfirm" required placeholder="••••••••">
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Cambiar contraseña</button>
+          </form>
+        </div>
+      </div>
+
       <!-- Solicitud de rol Administrador -->
       <div class="panel">
         <div class="panel-header">
@@ -1178,10 +1206,8 @@ const state = {
 
   // Colecciones de datos
   vacantes: [],
-  usuarios: [],
   // Lista de usuarios obtenida de GET /users (backend), usada para la
   // tabla del panel de Usuarios y para el total de "Usuarios registrados".
-  // state.usuarios se mantiene aparte para no romper el login/roles locales.
   usuariosBackend: [],
   seguimientos: [],
   adminRequests: [],
@@ -1194,60 +1220,11 @@ const state = {
   pendingDelete: null // { type: 'vacante' | 'usuario', id: number }
 };
 
-// Contadores autoincrementales simulados (simulan IDs de BD)
-let nextVacanteId = 1;
-let nextUsuarioId = 1;
-let nextSeguimientoId = 1;
-let nextAdminRequestId = 1;
+// Contador local usado únicamente por logActivity() (vestigio de la
+// versión anterior; ya no se usa para generar IDs reales de ningún
+// recurso, porque vacantes/usuarios/seguimientos/solicitudes los
+// genera MySQL con AUTO_INCREMENT en el backend).
 let nextActivityId = 1;
-
-
-/* =====================================================================
-   DATOS SIMULADOS
-   ---------------------------------------------------------------------
-   "Base de datos" en memoria. En el futuro estos registros vivirán en
-   una base de datos real (por ejemplo MongoDB / PostgreSQL) gestionada
-   por el backend Node.js + Express.
-   ===================================================================== */
-
-// Usuarios registrados (incluye contraseña simulada en texto plano
-// SOLO para esta demo local; en el backend real se debe usar hashing
-// con bcrypt y nunca exponer la contraseña al frontend).
-const usuariosSeed = [
-  {
-    nombre: 'Laura',
-    apellidos: 'Gómez',
-    correo: 'laura.gomez@jobtracker.com',
-    password: 'admin123',
-    rol: 'ADMIN',
-    estadoVerificacion: 'verificado',
-    telefono: '',
-    ciudad: '',
-    linkedin: '',
-    github: ''
-  },
-  {
-    nombre: 'Mariana',
-    apellidos: 'Ríos',
-    correo: 'mariana.rios@jobtracker.com',
-    password: 'user123',
-    rol: 'USER',
-    estadoVerificacion: 'verificado',
-    telefono: '+57 300 123 4567',
-    ciudad: 'Bogotá',
-    linkedin: 'https://linkedin.com/in/marianarios',
-    github: 'https://github.com/marianarios'
-  }
-];
-
-// Vacantes de ejemplo
-const vacantesSeed = [
-  { empresa: 'Nimbus Tech', cargo: 'Desarrollador Frontend', salario: 4500000, ciudad: 'Bogotá', estado: 'Entrevista', fechaCreacion: '2026-05-18' },
-  { empresa: 'DataForge', cargo: 'Analista de Datos', salario: 4000000, ciudad: 'Medellín', estado: 'En revisión', fechaCreacion: '2026-05-25' },
-  { empresa: 'CloudNine SAS', cargo: 'Ingeniero Backend', salario: 5200000, ciudad: 'Remoto', estado: 'Aplicada', fechaCreacion: '2026-06-01' },
-  { empresa: 'Vertex Software', cargo: 'Desarrollador Full Stack', salario: 4800000, ciudad: 'Cali', estado: 'Oferta', fechaCreacion: '2026-06-04' },
-  { empresa: 'PixelWorks', cargo: 'Diseñador UI/UX', salario: 3800000, ciudad: 'Bogotá', estado: 'Rechazada', fechaCreacion: '2026-06-08' }
-];
 
 
 /* =====================================================================
@@ -1280,20 +1257,32 @@ const vacantesSeed = [
    compatible con fetch, por lo que el resto de la app no necesita
    cambios estructurales.
 
-   NOTA DE INTEGRACIÓN:
-   Las funciones getJobs(), getUsers(), getStats() y getActivity(),
-   así como el CRUD de vacantes y usuarios, ya están conectadas al
-   backend real mediante fetchJSON() (ver más abajo). El resto de la
-   capa "api" (login, registro, seguimientos, solicitudes, perfil)
-   sigue trabajando sobre el estado local, tal como antes.
+   NOTA DE INTEGRACIÓN (actualizada):
+   TODAS las funciones de "api" están conectadas al backend real:
+   login, register, logout, vacantes (jobs), usuarios, seguimientos,
+   solicitudes de administrador (applications), estadísticas (stats),
+   actividad y cambio de contraseña. Nada queda ya en estado local
+   simulado: state.vacantes, state.usuariosBackend, state.seguimientos,
+   state.adminRequests, etc. funcionan como caché de lo que devuelve
+   el backend, no como fuente de verdad.
    ===================================================================== */
 
-// --- Helper de b  jo nivel para llamadas fetch al backend ---
+// --- Helper de bajo nivel para llamadas fetch al backend ---
 // Centraliza el manejo de errores HTTP y el parseo de JSON.
+// CORRECCIÓN: ahora también envía el header `x-user-id` con el id del
+// usuario que tiene la sesión activa (cuando existe). El backend lo
+// usa para filtrar vacantes y seguimientos por dueño (ver
+// src/utils/helpers.js -> getCurrentUserId en el backend).
 function fetchJSON(path, options = {}) {
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+
+  if (state.currentUser && state.currentUser.id) {
+    headers['x-user-id'] = String(state.currentUser.id);
+  }
+
   return fetch(`${API_BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options
+    ...options,
+    headers
   }).then(res => {
     if (!res.ok) {
       return res.json()
@@ -1306,54 +1295,33 @@ function fetchJSON(path, options = {}) {
 
 const api = {
 
-  // ---------- AUTENTICACIÓN ----------
-  // Futuro backend: POST /api/auth/login
+  // ---------- AUTENTICACIÓN (conectado al backend: POST /api/auth/*) ----------
+  // CORRECCIÓN DE BUG: login/register ya NO se validan/crean contra
+  // state.usuarios (local); ahora van contra la base de datos MySQL
+  // real a través del backend. Esto también arregla que los usuarios
+  // registrados desde la pantalla de login no persistían: ahora se
+  // guardan en la tabla `usuarios` igual que los creados por un ADMIN.
   login(correo, password) {
-    const user = state.usuarios.find(u =>
-      u.correo.toLowerCase() === correo.toLowerCase() && u.password === password
-    );
-    if (!user) {
-      return Promise.reject(new Error('Correo o contraseña incorrectos.'));
-    }
-    // Simula un token JWT (en el backend real sería firmado con una clave secreta)
-    const fakeToken = 'fake-jwt-token.' + user.id + '.' + Date.now();
-    return Promise.resolve({ token: fakeToken, user: { ...user } });
+    return fetchJSON('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ correo, password })
+    });
   },
-
-  // Futuro backend: POST /api/auth/register
+ 
   register(data) {
-    const existe = state.usuarios.find(u => u.correo.toLowerCase() === data.correo.toLowerCase());
-    if (existe) {
-      return Promise.reject(new Error('Ya existe una cuenta registrada con ese correo.'));
-    }
-    const nuevo = {
-      id: nextUsuarioId++,
-      nombre: data.nombre,
-      apellidos: data.apellidos,
-      correo: data.correo,
-      password: data.password,
-      // Todos los registros nuevos entran como USER (nunca ADMIN directo)
-      rol: 'USER',
-      // Estado preparado para futura verificación por correo
-      estadoVerificacion: 'pendiente_verificacion',
-      telefono: '',
-      ciudad: '',
-      linkedin: '',
-      github: ''
-    };
-    state.usuarios.push(nuevo);
-    logActivity('usuario_registrado', `Nuevo usuario registrado: ${nuevo.nombre} ${nuevo.apellidos}`, 'info');
-    return Promise.resolve({ ...nuevo });
+    return fetchJSON('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
   },
 
-  // Futuro backend: POST /api/auth/logout
-  // (en un backend con JWT normalmente solo se invalida el token en cliente
-  // o se añade a una lista negra en el servidor)
   logout() {
-    state.currentUser = null;
-    state.authToken = null;
-    return Promise.resolve({ success: true });
-  },
+    return fetchJSON('/api/auth/logout', { method: 'POST' })
+      .finally(() => {
+        state.currentUser = null;
+        state.authToken = null;
+      });
+  },  
 
   // ---------- VACANTES (conectado al backend: GET/POST/PUT/DELETE /jobs) ----------
   // getJobs() es el nombre "oficial" pedido para la integración;
@@ -1418,128 +1386,87 @@ const api = {
   },
 
 
-  // ---------- SEGUIMIENTOS ----------
+  // ---------- SEGUIMIENTOS (conectado al backend: GET/POST /seguimientos) ----------
+  // CORRECCIÓN DE BUG: los seguimientos no se guardaban porque estas
+  // funciones nunca llamaban al backend; ahora usan /seguimientos.
+  // El backend filtra automáticamente por el usuario actual (header
+  // x-user-id que envía fetchJSON), así que cada usuario solo ve los
+  // seguimientos de sus propias vacantes.
   getSeguimientos() {
-    return Promise.resolve([...state.seguimientos]);
+    return fetchJSON('/seguimientos');
   },
   createSeguimiento(data) {
-    const nuevo = { id: nextSeguimientoId++, ...data };
-    state.seguimientos.push(nuevo);
-    return Promise.resolve(nuevo);
+    return fetchJSON('/seguimientos', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
   },
 
-  // ---------- PERFIL ----------
-  // Futuro backend: GET /api/profile (requiere token JWT)
+  // ---------- PERFIL (conectado al backend: GET/PUT /users/:id/profile) ----------
   getProfile() {
     if (!state.currentUser) return Promise.reject(new Error('No hay sesión activa'));
-    const user = state.usuarios.find(u => u.id === state.currentUser.id);
-    return Promise.resolve(stripPassword(user));
+    return fetchJSON(`/users/${state.currentUser.id}/profile`);
   },
-  // Futuro backend: PUT /api/profile (requiere token JWT)
   // Solo permite editar campos personales; rol y estadoVerificacion
-  // se ignoran aunque vengan en el payload (se validan en backend real).
+  // se ignoran aunque vengan en el payload (el backend los descarta).
   updateProfile(data) {
-    const idx = state.usuarios.findIndex(u => u.id === state.currentUser.id);
-    if (idx === -1) return Promise.reject(new Error('Usuario no encontrado'));
-
-    // Campos editables permitidos
-    const { nombre, apellidos, correo, telefono, ciudad, linkedin, github } = data;
-    state.usuarios[idx] = {
-      ...state.usuarios[idx],
-      nombre, apellidos, correo, telefono, ciudad, linkedin, github
-      // rol y estadoVerificacion NO se modifican aquí
-    };
-
-    // Sincroniza la sesión actual con los nuevos datos
-    state.currentUser = stripPassword(state.usuarios[idx]);
-    return Promise.resolve({ ...state.currentUser });
+    if (!state.currentUser) return Promise.reject(new Error('No hay sesión activa'));
+    return fetchJSON(`/users/${state.currentUser.id}/profile`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    }).then(actualizado => {
+      // Sincroniza la sesión actual con los nuevos datos
+      state.currentUser = actualizado;
+      return actualizado;
+    });
   },
 
-  // ---------- SOLICITUDES DE ADMINISTRADOR ----------
-  // Futuro backend: POST /api/admin-requests
+  // ---------- CAMBIO DE CONTRASEÑA (conectado al backend: PUT /users/:id/password) ----------
+  // NUEVA FUNCIONALIDAD: faltaba la posibilidad de cambiar la
+  // contraseña desde la sección Perfil. Requiere la contraseña
+  // actual para validar identidad antes de aceptar la nueva.
+  changePassword(passwordActual, passwordNueva) {
+    if (!state.currentUser) return Promise.reject(new Error('No hay sesión activa'));
+    return fetchJSON(`/users/${state.currentUser.id}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ passwordActual, passwordNueva })
+    });
+  },
+
+  // ---------- SOLICITUDES DE ADMINISTRADOR (conectado al backend: /applications) ----------
+  // CORRECCIÓN DE BUG: las solicitudes no se guardaban en
+  // `solicitudes_admin` porque estas funciones nunca llamaban al
+  // backend. Al estar ahora conectadas, aprobar una solicitud
+  // (PUT /applications/:id) actualiza el rol directamente en MySQL
+  // (lo hace la propia ruta del backend), así que ya no se necesita
+  // ningún truco de sincronización por correo: el usuarioId es el
+  // mismo en el frontend y en la base de datos.
   createAdminRequest() {
-    // Evita duplicar solicitudes pendientes para el mismo usuario
-    const yaExiste = state.adminRequests.find(
-      r => r.usuarioId === state.currentUser.id && r.estado === 'PENDIENTE'
-    );
-    if (yaExiste) {
-      return Promise.reject(new Error('Ya tienes una solicitud pendiente.'));
-    }
-    const nueva = {
-      id: nextAdminRequestId++,
-      usuarioId: state.currentUser.id,
-      nombre: state.currentUser.nombre + ' ' + state.currentUser.apellidos,
-      correo: state.currentUser.correo,
-      fecha: new Date().toISOString().slice(0, 10),
-      estado: 'PENDIENTE'
-    };
-    state.adminRequests.push(nueva);
-    logActivity('solicitud_enviada', `Solicitud de rol Administrador enviada por ${nueva.nombre}`, 'warning');
-    return Promise.resolve(nueva);
+    if (!state.currentUser) return Promise.reject(new Error('No hay sesión activa'));
+    return fetchJSON('/applications', {
+      method: 'POST',
+      body: JSON.stringify({ usuarioId: state.currentUser.id })
+    });
   },
-  // Futuro backend: GET /api/admin-requests (requiere rol ADMIN)
   getAdminRequests() {
-    return Promise.resolve([...state.adminRequests]);
+    return fetchJSON('/applications');
   },
-  // Futuro backend: PUT /api/admin-requests/:id (requiere rol ADMIN)
   resolveAdminRequest(id, estado) {
-    const idx = state.adminRequests.findIndex(r => r.id === id);
-    if (idx === -1) return Promise.reject(new Error('Solicitud no encontrada'));
-
-    state.adminRequests[idx].estado = estado;
-
-    if (estado === 'APROBADA') {
-      logActivity('solicitud_aprobada', `Solicitud de Administrador aprobada para ${state.adminRequests[idx].nombre}`, 'success');
-    } else if (estado === 'RECHAZADA') {
-      logActivity('solicitud_rechazada', `Solicitud de Administrador rechazada para ${state.adminRequests[idx].nombre}`, 'danger');
-    }
-
-    if (estado !== 'APROBADA') {
-      return Promise.resolve(state.adminRequests[idx]);
-    }
-
-    // Si se aprueba, el usuario solicitante pasa a ser ADMIN.
-    // CORRECCIÓN DE BUG: además de actualizar el rol en el estado local
-    // (state.usuarios, usado para login/sesión), también hay que
-    // sincronizar el cambio con el backend real (PUT /users/:id), ya
-    // que la tabla de Usuarios se pinta con state.usuariosBackend,
-    // obtenido de GET /users. Sin este paso, el backend seguía
-    // devolviendo el rol antiguo (USER) y la tabla no se actualizaba
-    // hasta una edición o recarga posterior que sí tocara ese registro.
-    const usuarioIdx = state.usuarios.findIndex(u => u.id === state.adminRequests[idx].usuarioId);
-    if (usuarioIdx === -1) {
-      return Promise.resolve(state.adminRequests[idx]);
-    }
-
-    state.usuarios[usuarioIdx].rol = 'ADMIN';
-    const correoUsuario = state.usuarios[usuarioIdx].correo;
-
-    // Si el usuario afectado es el que tiene la sesión activa, actualizarla
-    if (state.currentUser && state.currentUser.id === state.usuarios[usuarioIdx].id) {
-      state.currentUser = stripPassword(state.usuarios[usuarioIdx]);
-    }
-
-    // Busca el registro correspondiente en el backend por correo
-    // (los IDs locales y los del backend son independientes) y
-    // actualiza su rol a ADMIN para que GET /users quede sincronizado.
-    return api.getUsers()
-      .then(usuariosBackend => {
-        const backendUser = usuariosBackend.find(
-          u => u.correo.toLowerCase() === correoUsuario.toLowerCase()
-        );
-        if (!backendUser) {
-          // El usuario no existe como tal en el backend (por ejemplo,
-          // fue registrado solo localmente): no hay nada que sincronizar.
-          return;
-        }
-        return api.updateUsuario(backendUser.id, { rol: 'ADMIN' });
-      })
-      .catch(err => {
-        // No bloquea la aprobación de la solicitud si la sincronización
-        // con el backend falla; solo se registra en consola.
-        console.error('No se pudo sincronizar el rol ADMIN con el backend:', err);
-      })
-      .then(() => state.adminRequests[idx]);
+    return fetchJSON(`/applications/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ estado })
+    }).then(actualizada => {
+      // Si el usuario afectado es el que tiene la sesión activa y fue
+      // aprobado, se actualiza su rol en la sesión local también.
+      if (
+        estado === 'APROBADA' &&
+        state.currentUser &&
+        state.currentUser.id === actualizada.usuarioId
+      ) {
+        state.currentUser = { ...state.currentUser, rol: 'ADMIN' };
+      }
+      return actualizada;
+    });
   }
 };
 
@@ -1945,7 +1872,7 @@ function renderQuickSummary() {
 
   const empresaTop = resumen.empresaTop || { nombre: '—', total: 0 };
   const ultimaVacante = resumen.ultimaVacante; // { cargo, empresa, fechaCreacion } o null
-  const totalUsuarios = resumen.totalUsuarios ?? state.usuarios.length;
+  const totalUsuarios = resumen.totalUsuarios ?? state.usuariosBackend.length;
 
   const items = [
     {
@@ -1973,7 +1900,7 @@ function renderQuickSummary() {
   `).join('');
 }
 
-// Respaldo: calcula el resumen rápido a partir de state.vacantes / state.usuarios
+// Respaldo: calcula el resumen rápido a partir de state.vacantes / state.usuariosBackend
 function calcularResumenLocal() {
   let empresaTop = { nombre: '—', total: 0 };
   if (state.vacantes.length > 0) {
@@ -1994,7 +1921,7 @@ function calcularResumenLocal() {
   return {
     empresaTop,
     ultimaVacante,
-    totalUsuarios: state.usuarios.length
+    totalUsuarios: state.usuariosBackend.length
   };
 }
 
@@ -2209,7 +2136,25 @@ function renderPerfil() {
   document.getElementById('sidebarUserName').textContent = `${p.nombre} ${p.apellidos || ''}`.trim();
   document.getElementById('sidebarUserRole').textContent = p.rol;
 
-  renderAdminRequestStatus();
+  // CORRECCIÓN DE BUG: un usuario USER nunca cargaba state.adminRequests
+  // (eso solo ocurría para ADMIN en renderAll/navigateTo), así que su
+  // propia solicitud de rol Administrador nunca se reflejaba en Perfil
+  // aunque ya estuviera guardada en la base de datos. Ahora se cargan
+  // explícitamente las solicitudes antes de pintar el estado, sin
+  // depender del rol del usuario actual.
+  if (p.rol !== 'ADMIN') {
+    api.getAdminRequests()
+      .then(solicitudes => {
+        state.adminRequests = solicitudes;
+        renderAdminRequestStatus();
+      })
+      .catch(err => {
+        console.error('Error al obtener /applications:', err);
+        renderAdminRequestStatus();
+      });
+  } else {
+    renderAdminRequestStatus();
+  }
 }
 
 // --- Estado de la solicitud de rol Administrador en Perfil ---
@@ -2274,6 +2219,16 @@ function renderAll() {
       // Mantiene los datos previos en caso de error de red
     });
 
+  // CORRECCIÓN DE BUG: antes nada recargaba state.seguimientos ni
+  // state.adminRequests desde el backend, así que aunque los datos ya
+  // se guardaran correctamente en MySQL, nunca se reflejaban en la
+  // tabla de Seguimientos ni en el panel de Solicitudes.
+  const cargarSeguimientos = api.getSeguimientos()
+    .then(seguimientos => { state.seguimientos = seguimientos; })
+    .catch(err => {
+      console.error('Error al obtener /seguimientos:', err);
+    });
+
   const isAdmin = state.currentUser && state.currentUser.rol === 'ADMIN';
   const cargarUsuarios = isAdmin
     ? api.getUsers()
@@ -2283,7 +2238,15 @@ function renderAll() {
         })
     : Promise.resolve();
 
-  return Promise.all([cargarVacantes, cargarUsuarios]).then(() => {
+  const cargarSolicitudes = isAdmin
+    ? api.getAdminRequests()
+        .then(solicitudes => { state.adminRequests = solicitudes; })
+        .catch(err => {
+          console.error('Error al obtener /applications:', err);
+        })
+    : Promise.resolve();
+
+  return Promise.all([cargarVacantes, cargarSeguimientos, cargarUsuarios, cargarSolicitudes]).then(() => {
     return renderDashboard();
   }).then(() => {
     renderVacantes();
@@ -2335,12 +2298,25 @@ function navigateTo(pageId) {
     api.getJobs()
       .then(vacantes => { state.vacantes = vacantes; renderVacantes(); })
       .catch(err => console.error('Error al obtener /jobs:', err));
+  } else if (pageId === 'seguimientos') {
+    Promise.all([
+      api.getJobs().then(vacantes => { state.vacantes = vacantes; }),
+      api.getSeguimientos().then(seguimientos => { state.seguimientos = seguimientos; })
+    ])
+      .then(() => {
+        renderSeguimientoSelect();
+        renderSeguimientos();
+      })
+      .catch(err => console.error('Error al obtener /seguimientos:', err));
   } else if (pageId === 'usuarios') {
     const isAdmin = state.currentUser && state.currentUser.rol === 'ADMIN';
     if (isAdmin) {
-      api.getUsers()
-        .then(usuarios => { state.usuariosBackend = usuarios; renderUsuarios(); })
-        .catch(err => console.error('Error al obtener /users:', err));
+      Promise.all([
+        api.getUsers().then(usuarios => { state.usuariosBackend = usuarios; }),
+        api.getAdminRequests().then(solicitudes => { state.adminRequests = solicitudes; })
+      ])
+        .then(() => renderUsuarios())
+        .catch(err => console.error('Error al obtener /users o /applications:', err));
     } else {
       renderUsuarios();
     }
@@ -2482,11 +2458,15 @@ formSeguimiento.addEventListener('submit', (e) => {
     descripcion: document.getElementById('seguimientoDescripcion').value.trim()
   };
 
-  api.createSeguimiento(data).then(() => {
-    formSeguimiento.reset();
-    document.getElementById('seguimientoFecha').valueAsDate = new Date();
-    renderAll();
-  });
+  api.createSeguimiento(data)
+    .then(() => {
+      formSeguimiento.reset();
+      document.getElementById('seguimientoFecha').valueAsDate = new Date();
+      renderAll();
+    })
+    .catch(err => {
+      alert(err.message);
+    });
 });
 
 
@@ -2593,10 +2573,50 @@ formPerfil.addEventListener('submit', (e) => {
   });
 });
 
+// --- Cambiar contraseña ---
+const formPassword = document.getElementById('formPassword');
+
+formPassword.addEventListener('submit', (e) => {
+  e.preventDefault();
+
+  const passwordErrorEl = document.getElementById('passwordError');
+  const passwordSuccessEl = document.getElementById('passwordSuccess');
+  passwordErrorEl.classList.remove('active');
+  passwordSuccessEl.classList.remove('active');
+
+  const passwordActual = document.getElementById('passwordActual').value;
+  const passwordNueva = document.getElementById('passwordNueva').value;
+  const passwordNuevaConfirm = document.getElementById('passwordNuevaConfirm').value;
+
+  if (passwordNueva !== passwordNuevaConfirm) {
+    passwordErrorEl.textContent = 'Las contraseñas no coinciden.';
+    passwordErrorEl.classList.add('active');
+    return;
+  }
+  if (passwordNueva.length < 6) {
+    passwordErrorEl.textContent = 'La nueva contraseña debe tener al menos 6 caracteres.';
+    passwordErrorEl.classList.add('active');
+    return;
+  }
+
+  api.changePassword(passwordActual, passwordNueva)
+    .then(() => {
+      formPassword.reset();
+      passwordSuccessEl.textContent = 'Contraseña actualizada correctamente.';
+      passwordSuccessEl.classList.add('active');
+    })
+    .catch(err => {
+      passwordErrorEl.textContent = err.message;
+      passwordErrorEl.classList.add('active');
+    });
+});
+
 // --- Botón: Solicitar rol Administrador ---
 document.getElementById('btnSolicitarAdmin').addEventListener('click', () => {
   api.createAdminRequest()
-    .then(() => {
+    .then(() => api.getAdminRequests())
+    .then(solicitudes => {
+      state.adminRequests = solicitudes;
       renderAdminRequestStatus();
     })
     .catch(err => {
@@ -2629,8 +2649,8 @@ document.getElementById('confirmAccept').addEventListener('click', () => {
 
   let action;
   if (pending.type === 'vacante') {
-    // También eliminar seguimientos asociados a la vacante
-    state.seguimientos = state.seguimientos.filter(s => s.vacanteId !== pending.id);
+    // Los seguimientos asociados se eliminan en el backend (cascada
+    // al borrar la vacante); no hace falta tocar ningún arreglo local.
     action = api.deleteVacante(pending.id);
   } else if (pending.type === 'usuario') {
     action = api.deleteUsuario(pending.id);
@@ -2657,37 +2677,20 @@ confirmModal.addEventListener('click', (e) => {
 /* =====================================================================
    INICIALIZACIÓN
    ---------------------------------------------------------------------
-   Carga datos simulados iniciales (a futuro: peticiones reales al API)
-   y deja la aplicación lista mostrando la pantalla de autenticación.
+   Prepara la pantalla inicial (login/registro). El login y el
+   registro ahora se validan/crean directamente contra el backend
+   (MySQL) mediante api.login() / api.register(); ya no existe un
+   seed local de usuarios para simular autenticación.
    ===================================================================== */
-function seedData() {
-  // Carga los usuarios de ejemplo en el estado LOCAL (solo para login/roles).
-  // Estos usuarios NO se envían al backend: state.usuarios se usa
-  // únicamente para autenticación y gestión de roles en el frontend,
-  // tal como antes de la integración.
-  usuariosSeed.forEach(u => {
-    state.usuarios.push({ id: nextUsuarioId++, ...u });
-  });
-
-  // NOTA DE INTEGRACIÓN: las vacantes y seguimientos de ejemplo ya NO
-  // se crean aquí. El backend (GET /jobs, /seguimientos) ya inicia
-  // con su propio seed de datos; volver a crearlos aquí duplicaría
-  // las vacantes en cada carga de la página.
-  return Promise.resolve();
-}
-
 function init() {
   // Establece la fecha de hoy como valor por defecto en el formulario de seguimientos
   document.getElementById('seguimientoFecha').valueAsDate = new Date();
 
-  // Carga los usuarios de ejemplo para login/roles (estado local).
-  // Las vacantes, usuarios (tabla ADMIN), estadísticas y actividad
-  // se cargan en tiempo real desde el backend al iniciar sesión
-  // (ver enterApp() -> renderAll() / navigateTo('dashboard')).
-  seedData().then(() => {
-    // Al iniciar, no hay sesión activa: se muestra la pantalla de login/registro.
-    // appRoot permanece oculto hasta que el usuario inicie sesión correctamente.
-  });
+  // Las vacantes, usuarios (tabla ADMIN), estadísticas y actividad se
+  // cargan en tiempo real desde el backend al iniciar sesión (ver
+  // enterApp() -> renderAll() / navigateTo('dashboard')). No hay
+  // sesión activa al cargar la página: se muestra login/registro y
+  // appRoot permanece oculto hasta autenticar correctamente.
 }
 
 init();

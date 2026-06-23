@@ -1,32 +1,42 @@
 /* =====================================================================
    RUTAS DE VACANTES (JOBS)
    ---------------------------------------------------------------------
-   GET    /jobs        -> lista de vacantes
-   POST   /jobs         -> crear vacante
+   GET    /jobs        -> lista de vacantes DEL USUARIO ACTUAL
+   POST   /jobs         -> crear vacante (queda asociada al usuario actual)
    PUT    /jobs/:id      -> editar vacante (incluye cambios de estado)
    DELETE /jobs/:id       -> eliminar vacante (y sus seguimientos)
 
    GET    /jobs/:id/seguimientos -> historial de seguimientos de una vacante
    POST   /jobs/:id/seguimientos -> registrar un nuevo seguimiento
 
-   MIGRACIÓN A MYSQL: las operaciones que antes mutaban store.vacantes
-   y store.seguimientos ahora se ejecutan contra las tablas `vacantes`
-   y `seguimientos` mediante vacantesRepo / seguimientosRepo. Cada
-   operación de creación/edición/eliminación o cambio de estado sigue
-   registrando un evento en la tabla `actividad` (actividadRepo),
-   igual que en la versión en memoria.
+   CORRECCIÓN DE BUG (vacantes visibles para todos los usuarios):
+   Cada vacante pertenece a un usuario (columna usuario_id en la
+   tabla `vacantes`, ver sql/migration_usuario_id.sql). El usuario
+   actual se identifica mediante getCurrentUserId(req), que lee el
+   header `x-user-id` enviado por el frontend (con sus alternativas
+   por query/body) — ver utils/helpers.js para más detalle.
+
+   - GET /jobs: si se identifica al usuario, solo devuelve SUS
+     vacantes. Si no se envía ningún identificador (compatibilidad
+     hacia atrás), devuelve todas, igual que antes de esta corrección.
+   - POST /jobs: requiere identificar al usuario; la vacante se crea
+     con ese usuario como dueño.
+   - PUT/DELETE /jobs/:id y las rutas de seguimientos por vacante:
+     si se identifica al usuario, se verifica que la vacante le
+     pertenezca antes de permitir la operación (403 si no le pertenece).
    ===================================================================== */
 const express = require('express');
 const router = express.Router();
 const vacantesRepo = require('../db/repositories/vacantesRepo');
 const seguimientosRepo = require('../db/repositories/seguimientosRepo');
 const actividadRepo = require('../db/repositories/actividadRepo');
-const { todayISO } = require('../utils/helpers');
+const { todayISO, getCurrentUserId } = require('../utils/helpers');
 
 // --- GET /jobs ---
 router.get('/', async (req, res, next) => {
   try {
-    const vacantes = await vacantesRepo.findAll();
+    const usuarioId = getCurrentUserId(req);
+    const vacantes = await vacantesRepo.findAll(usuarioId);
     res.json(vacantes);
   } catch (err) {
     next(err);
@@ -36,6 +46,11 @@ router.get('/', async (req, res, next) => {
 // --- POST /jobs ---
 router.post('/', async (req, res, next) => {
   try {
+    const usuarioId = getCurrentUserId(req);
+    if (!usuarioId) {
+      return res.status(401).json({ error: 'No se pudo identificar al usuario actual (falta x-user-id).' });
+    }
+
     const { empresa, cargo, salario, ciudad, estado, fechaCreacion } = req.body;
 
     if (!empresa || !cargo || !ciudad) {
@@ -43,6 +58,7 @@ router.post('/', async (req, res, next) => {
     }
 
     const nueva = await vacantesRepo.create({
+      usuarioId,
       empresa,
       cargo,
       salario: salario || '',
@@ -67,6 +83,11 @@ router.put('/:id', async (req, res, next) => {
 
     if (!anterior) {
       return res.status(404).json({ error: 'Vacante no encontrada.' });
+    }
+
+    const usuarioId = getCurrentUserId(req);
+    if (usuarioId && anterior.usuarioId !== usuarioId) {
+      return res.status(403).json({ error: 'Esta vacante no te pertenece.' });
     }
 
     const { estado } = req.body;
@@ -104,6 +125,11 @@ router.delete('/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'Vacante no encontrada.' });
     }
 
+    const usuarioId = getCurrentUserId(req);
+    if (usuarioId && vacante.usuarioId !== usuarioId) {
+      return res.status(403).json({ error: 'Esta vacante no te pertenece.' });
+    }
+
     // Elimina también los seguimientos asociados a esta vacante.
     // Si tu tabla `seguimientos` ya tiene ON DELETE CASCADE en la FK,
     // esta línea es redundante pero inofensiva; si no la tiene, es
@@ -125,6 +151,17 @@ router.delete('/:id', async (req, res, next) => {
 router.get('/:id/seguimientos', async (req, res, next) => {
   try {
     const vacanteId = Number(req.params.id);
+    const vacante = await vacantesRepo.findById(vacanteId);
+
+    if (!vacante) {
+      return res.status(404).json({ error: 'Vacante no encontrada.' });
+    }
+
+    const usuarioId = getCurrentUserId(req);
+    if (usuarioId && vacante.usuarioId !== usuarioId) {
+      return res.status(403).json({ error: 'Esta vacante no te pertenece.' });
+    }
+
     const lista = await seguimientosRepo.findByVacanteId(vacanteId);
     res.json(lista);
   } catch (err) {
@@ -140,6 +177,11 @@ router.post('/:id/seguimientos', async (req, res, next) => {
 
     if (!vacante) {
       return res.status(404).json({ error: 'Vacante no encontrada.' });
+    }
+
+    const usuarioId = getCurrentUserId(req);
+    if (usuarioId && vacante.usuarioId !== usuarioId) {
+      return res.status(403).json({ error: 'Esta vacante no te pertenece.' });
     }
 
     const { fecha, tipo, descripcion } = req.body;

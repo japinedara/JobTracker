@@ -38,14 +38,20 @@ CREATE TABLE IF NOT EXISTS usuarios (
 -- ---------------------------------------------------------------------
 -- vacantes
 -- ---------------------------------------------------------------------
+-- usuario_id: dueño de la vacante. Cada usuario solo debe ver y
+-- gestionar sus propias vacantes (ver src/routes/jobs.js).
 CREATE TABLE IF NOT EXISTS vacantes (
   id              INT AUTO_INCREMENT PRIMARY KEY,
+  usuario_id      INT          NOT NULL,
   empresa         VARCHAR(150) NOT NULL,
   cargo           VARCHAR(150) NOT NULL,
   salario         VARCHAR(30)  NOT NULL DEFAULT '',
   ciudad          VARCHAR(120) NOT NULL,
   estado          ENUM('Aplicada', 'En revisión', 'Entrevista', 'Oferta', 'Rechazada') NOT NULL DEFAULT 'Aplicada',
-  fecha_creacion  DATE         NOT NULL
+  fecha_creacion  DATE         NOT NULL,
+  CONSTRAINT fk_vacantes_usuario
+    FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+    ON DELETE CASCADE
 );
 
 -- ---------------------------------------------------------------------
@@ -98,10 +104,13 @@ VALUES
   ('Mariana', 'Ríos', 'mariana.rios@jobtracker.com', 'user123', 'USER', 'verificado', '+57 300 123 4567', 'Bogotá', 'https://linkedin.com/in/marianarios', 'https://github.com/marianarios')
 ON DUPLICATE KEY UPDATE correo = correo;
 
-INSERT INTO vacantes (empresa, cargo, salario, ciudad, estado, fecha_creacion)
+-- El seed de vacantes asigna las vacantes de ejemplo al usuario ADMIN
+-- (id = 1, Laura) para no dejar usuario_id en NULL. Ajusta el id si en
+-- tu base de datos el primer usuario insertado tiene otro id.
+INSERT INTO vacantes (usuario_id, empresa, cargo, salario, ciudad, estado, fecha_creacion)
 VALUES
-  ('Nimbus Tech', 'Desarrollador Frontend', '4500000', 'Bogotá', 'Entrevista', '2026-05-18'),
-  ('DataForge', 'Analista de Datos', '4000000', 'Medellín', 'En revisión', '2026-05-25'),
-  ('CloudNine SAS', 'Ingeniero Backend', '5200000', 'Remoto', 'Aplicada', '2026-06-01'),
-  ('Vertex Software', 'Desarrollador Full Stack', '4800000', 'Cali', 'Oferta', '2026-06-04'),
-  ('PixelWorks', 'Diseñador UI/UX', '3800000', 'Bogotá', 'Rechazada', '2026-06-08');
+  (1, 'Nimbus Tech', 'Desarrollador Frontend', '4500000', 'Bogotá', 'Entrevista', '2026-05-18'),
+  (1, 'DataForge', 'Analista de Datos', '4000000', 'Medellín', 'En revisión', '2026-05-25'),
+  (1, 'CloudNine SAS', 'Ingeniero Backend', '5200000', 'Remoto', 'Aplicada', '2026-06-01'),
+  (1, 'Vertex Software', 'Desarrollador Full Stack', '4800000', 'Cali', 'Oferta', '2026-06-04'),
+  (1, 'PixelWorks', 'Diseñador UI/UX', '3800000', 'Bogotá', 'Rechazada', '2026-06-08');
